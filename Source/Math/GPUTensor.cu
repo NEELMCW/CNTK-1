@@ -818,6 +818,7 @@ static void LaunchTensorOp(ElemType beta, array<ElemType*, N> pointerVector, Ele
     CUDA_LONG NN = (CUDA_LONG) numElements; // linear space identifying each individual input element
     SyncGuard syncGuard;
     GridDim grid(NN);
+#if 0
 #ifdef CUDA_COMPILE
     if ((reductionOp == ElementWiseOperator::opArgmax) ||
         (reductionOp == ElementWiseOperator::opArgmin))
@@ -848,6 +849,7 @@ static void LaunchTensorOp(ElemType beta, array<ElemType*, N> pointerVector, Ele
                                                                                                                      grid.m_N, reducingOpDims, reducingStrides,
                                                                                                                      regularOpStrideDivmod, reducingOpDimDivmod);
     }
+#endif
 #endif
 }
 
@@ -996,7 +998,7 @@ static void LaunchTensorOpWithReduction(ElemType beta, array<ElemType*, N> point
 #endif
     }
     // === simple case: NN large, one thread per output element
-    else if (reductionDim == 1 ||                                     // no reduction
+/*    else if (reductionDim == 1 ||                                     // no reduction
              grid.m_blocksPerGrid >= props.multiProcessorCount ||     // enough output elements to fill all multiprocs
              reductionDim * numElements <= 2 * props.warpSize ||      // trivial operation not worth the trouble (2* because the more complex one also needs 2 kernel launches)
              disableParallelReduction ||                              // (for debugging)
@@ -1017,7 +1019,7 @@ static void LaunchTensorOpWithReduction(ElemType beta, array<ElemType*, N> point
             reducingOpDims, reducingStrides,
             regularOpStrideDivmod, reducingOpDimDivmod);
 #endif
-    }
+    }*/
     // === optimization: simple case would not use all multiprocs
     else
     {

@@ -43,6 +43,8 @@ struct cublasContext;
 typedef struct cublasContext* cublasHandle_t;
 typedef cublasHandle_t hipblasHandle_t;
 #elif defined __HIP_PLATFORM_HCC__
+//typedef struct Hcblaslibrary *hcblasHandle_t;
+//typedef hcblasHandle_t hipblasHandle_t;
 typedef void* hipblasHandle_t;
 #endif
 #endif
