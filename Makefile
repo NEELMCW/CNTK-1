@@ -140,9 +140,9 @@ ifneq ($(HIP_PLATFORM), hcc)
         CUFLAGS = -m 64
 endif
 
-ifneq ($(or $(CUDA_PATH),$(HIP_PATH)),)
+ifdef HIP_PATH
 
-ifneq ($(HIP_PLATFORM), hcc)
+ifeq ($(HIP_PLATFORM), nvcc)
   ifndef GDK_INCLUDE_PATH
     GDK_INCLUDE_PATH=/usr/include/nvidia/gdk
     $(info defaulting GDK_INCLUDE_PATH to $(GDK_INCLUDE_PATH))
@@ -156,9 +156,7 @@ ifneq ($(HIP_PLATFORM), hcc)
   INCLUDEPATH+=$(GDK_INCLUDE_PATH)
   INCLUDEPATH += $(CUDA_PATH)/include
   LIBPATH += $(CUDA_PATH)/lib64
-  ifdef HIP_PATH
-	LIBS_LIST += hipblas hiprand hipsparse
-  endif
+  LIBS_LIST += hipblas hiprand hipsparse
   LIBS_LIST += cublas cudart cuda curand cusparse nvidia-ml
 
   # Set up cuDNN if needed
@@ -190,13 +188,9 @@ endif
 
   DEVICE = gpu
 
-ifndef HIP_PATH
-  NVCC = $(CUDA_PATH)/bin/nvcc
-endif
   INCLUDEPATH+=$(CUB_PATH)
 
 # Set up CUDA includes and libraries
-ifdef HIP_PATH
   ifdef HIPDNN_PATH
     INCLUDEPATH += $(HIPDNN_PATH)/include
     #LIBPATH += /opt/rocm/lib64
@@ -210,7 +204,6 @@ ifdef HIP_PATH
   INCLUDEPATH += $(EXTERNAL_DIR)/rocrand/include/
   INCLUDEPATH += $(EXTERNAL_DIR)/hcsparse/include/
   LIBPATH += $(EXTERNAL_DIR)/lib64
-endif
 
 else
   DEVICE = cpu
@@ -226,7 +219,7 @@ ifeq ("$(MATHLIB)","mkl")
   COMMON_FLAGS += -DUSE_MKL
 endif
 
-ifneq ($(HIP_PLATFORM), hcc)
+ifeq ($(HIP_PLATFORM), nvcc)
 ifeq ($(CUDA_GDR),1)
   COMMON_FLAGS += -DUSE_CUDA_GDR
 endif
@@ -260,14 +253,6 @@ endif
 # Set up nvcc target architectures (will generate code to support them all, i.e. fat-binary, in release mode)
 # In debug mode we only include cubin/PTX for 30 and rely on PTX / JIT to generate the required native cubin format
 # see also http://docs.nvidia.com/cuda/pascal-compatibility-guide/index.html#building-applications-with-pascal-support
-ifndef HIP_PATH
-GENCODE_SM30 := -gencode arch=compute_30,code=\"sm_30,compute_30\"
-GENCODE_SM35 := -gencode arch=compute_35,code=\"sm_35,compute_35\"
-GENCODE_SM50 := -gencode arch=compute_50,code=\"sm_50,compute_50\"
-GENCODE_SM52 := -gencode arch=compute_52,code=\"sm_52,compute_52\"
-GENCODE_SM60 := -gencode arch=compute_60,code=\"sm_60,compute_60\"
-GENCODE_SM61 := -gencode arch=compute_61,code=\"sm_61,compute_61\"
-else
 ifeq ($(HIP_PLATFORM), nvcc)
 GENCODE_SM30 := -gencode arch=compute_30,code=sm_30
 GENCODE_SM35 := -gencode arch=compute_35,code=sm_35
@@ -279,7 +264,6 @@ GENCODE_SM61 := -gencode arch=compute_61,code=sm_61
 else
 ifeq ($(HIP_PLATFORM), hcc)
 GENCODE_FLAGS := -Wno-deprecated-register
-endif
 endif
 endif
 
@@ -453,7 +437,7 @@ MATH_SRC =\
 	$(SOURCEDIR)/Math/TensorView.cpp \
 	$(SOURCEDIR)/Math/NcclComm.cpp \
 
-ifneq ($(or $(CUDA_PATH),$(HIP_PATH)),)
+ifdef HIP_PATH
 MATH_SRC +=\
 	$(SOURCEDIR)/Math/CuDnnBatchNormalization.cu \
 	$(SOURCEDIR)/Math/CuDnnCommon.cu \
@@ -525,7 +509,7 @@ SEQUENCE_TRAINING_LIB_SRC =\
 	$(SOURCEDIR)/SequenceTrainingLib/latticeforwardbackward.cpp \
 	$(SOURCEDIR)/SequenceTrainingLib/parallelforwardbackward.cpp \
 
-ifneq ($(or $(CUDA_PATH),$(HIP_PATH)),)
+ifdef HIP_PATH
 SEQUENCE_TRAINING_LIB_SRC +=\
 	$(SOURCEDIR)/Math/cudalatticeops.cu \
 	$(SOURCEDIR)/Math/cudalattice.cpp \
@@ -763,7 +747,7 @@ $(EVAL_EXTENDED_CLIENT): $(EVAL_EXTENDED_CLIENT_OBJ) | $(EVAL_LIB) $(READER_LIBS
 ########################################
 CNTKLIBRARY_CPP_EVAL_EXAMPLES:=$(BINDIR)/CNTKLibraryCPPEvalExamples
 
-#ifneq ($(or $(CUDA_PATH),$(HIP_PATH)),)
+#ifdef HIP_PATH
 CNTKLIBRARY_CPP_EVAL_EXAMPLES_SRC=\
 	$(SOURCEDIR)/../Examples/Evaluation/CNTKLibraryCPPEvalGPUExamples/CNTKLibraryCPPEvalGPUExamples.cpp\
 	$(SOURCEDIR)/../Examples/Evaluation/CNTKLibraryCPPEvalCPUOnlyExamples/CNTKLibraryCPPEvalExamples.cpp
@@ -1575,11 +1559,7 @@ $(OBJDIR)/%.o : %.cu $(BUILD_CONFIGURATION)
 	@echo $(SEPARATOR)
 	@echo creating $@ for $(ARCH) with build type $(BUILDTYPE)
 	@mkdir -p $(dir $@)
-ifndef HIP_PATH
-	$(NVCC) -c $< -o $@ $(COMMON_FLAGS) $(CUFLAGS) $(INCLUDEPATH:%=-I%) -Xcompiler "-fPIC"
-else
 	$(HIPCC) -c $< -o $@ $(COMMON_FLAGS) $(CUFLAGS) $(INCLUDEPATH:%=-I%) $(COMPILE_FLAGS)
-endif
 
 $(OBJDIR)/%.pb.o : %.pb.cc $(BUILD_CONFIGURATION) 
 	@echo $(SEPARATOR)
