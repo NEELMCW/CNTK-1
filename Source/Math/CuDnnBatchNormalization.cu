@@ -9,9 +9,7 @@
 #include "CuDnnCommon.h"
 #include "GPUMatrix.h"
 
-#ifdef HIP_COMPILE
 #define HIPDNN_BN_MIN_EPSILON 1e-5 //TODO: __add__ replace with the correct macro
-#endif
 namespace Microsoft { namespace MSR { namespace CNTK {
 
 template <class ElemType>
