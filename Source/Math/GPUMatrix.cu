@@ -1237,6 +1237,7 @@ GPUMatrix<ElemType>& GPUMatrix<ElemType>::AssignTransposeOf(const GPUMatrix<Elem
     if (st != CUBLAS_STATUS_SUCCESS)
         RuntimeError("AssignTransposeOf failed");
 #elif defined HIP_COMPILE
+    std::cout<<"\n hello ";
     hipblasHandle_t cuHandle = GetCublasHandle(a.GetComputeDeviceId());
     hipblasOperation_t transA = HIPBLAS_OP_T;
     hipblasOperation_t transB = HIPBLAS_OP_T;

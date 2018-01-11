@@ -160,13 +160,8 @@ protected:
 
     void EnsureCompatible() override
     {
-#ifdef CUDA_COMPILE
-	if (m_imageLayout != ImageLayoutKind::CHW)
-            RuntimeError("Reference convolution engine supports only CHW/cudnn layout.");
-#elif defined HIP_COMPILE
         if (m_imageLayout != ImageLayoutKind::CHW)
             RuntimeError("Reference convolution engine supports only CHW/hipdnn layout.");
-#endif
     }
 
     void EnsureConvolutionInitialized() override
@@ -599,13 +594,8 @@ protected:
 
     void EnsureCompatible() override
     {
-#ifdef CUDA_COMPILE
-	if (m_imageLayout != ImageLayoutKind::CHW)
-            LogicError("GEMM convolution engine supports only CHW/cudnn layout.");
-#elif defined HIP_COMPILE
         if (m_imageLayout != ImageLayoutKind::CHW)
             LogicError("GEMM convolution engine supports only CHW/hipdnn layout.");
-#endif
         if (IsGpu(m_deviceId))
             LogicError("GEMM convolution engine currently supports only CPU device.");
     }
