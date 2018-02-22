@@ -185,7 +185,7 @@ endif
 
   DEVICE = gpu
 
-  INCLUDEPATH+=$(CUB_PATH)
+  INCLUDEPATH+=$(CUB_PATH) $(CUB_PATH)/external/Thrust/
 
 # Set up CUDA includes and libraries
   ifdef HIPDNN_PATH
