@@ -549,11 +549,11 @@ private:
     {
     	*newalgo = (*algotype).fwd_algo ;
     }
-    void algoMatch(miopenConvBwdDataAlgorithm_t* newalgo, hipdnnConvolutionFwdAlgoPerf_t* algotype)
+    void algoMatch(miopenConvBwdDataAlgorithm_t* newalgo, hipdnnConvolutionBwdDataAlgoPerf_t* algotype)
     {
         *newalgo = (*algotype).bwd_data_algo ;
     }
-    void algoMatch(miopenConvBwdWeightsAlgorithm_t* newalgo, hipdnnConvolutionFwdAlgoPerf_t* algotype)
+    void algoMatch(miopenConvBwdWeightsAlgorithm_t* newalgo, hipdnnConvolutionBwdFilterAlgoPerf_t* algotype)
     {
         *newalgo = (*algotype).bwd_weights_algo ;
     }
@@ -661,7 +661,11 @@ private:
                 HIPDNN_CALL(convertType(newAlgo, &selAlgo));
                 algo.RecordAlgoBatchSizeWorkspaceSize(true, selAlgo, batchSize, (*res).memory);
 		        hipdnnMathType_t hipMT;
+#ifdef __HIP_PLATFORM_NVCC__
 		        HIPDNN_CALL(convertType((*res).mathType, &hipMT));
+#elif defined __HIP_PLATFORM_HCC__
+                hipMT = HIPDNN_DEFAULT_MATH; //TODO: PRAS_AMD
+#endif
                 algo.AlgoMathType = hipMT;
                 algo.autotuningState = AutotuningState::Running;
                 if (algo.MaxAlgoWorkspaceSize < curSize)   // need to shrink the workspace
@@ -689,7 +693,11 @@ private:
                     HIPDNN_CALL(convertType(newAlgo, &selAlgo));
                     algo.RecordAlgoBatchSizeWorkspaceSize(true, selAlgo, batchSize, (*res).memory);
 		            hipdnnMathType_t hipMT;
+#ifdef __HIP_PLATFORM_NVCC__
                     HIPDNN_CALL(convertType((*res).mathType, &hipMT));
+#elif defined __HIP_PLATFORM_HCC__
+                    hipMT = HIPDNN_DEFAULT_MATH; //TODO: PRAS_AMD
+#endif
                     algo.AlgoMathType = hipMT;
                     algo.autotuningState = AutotuningState::Running;
                 }

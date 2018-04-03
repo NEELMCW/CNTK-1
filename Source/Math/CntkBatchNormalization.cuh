@@ -6,6 +6,10 @@
 
 #pragma once
 
+#ifdef __HIP_PLATFORM_HCC__ //TODO: __add__ remove when CUB is integrated
+#define CUB_PTX_WARP_THREADS 32
+#endif
+
 namespace Microsoft { namespace MSR { namespace CNTK {
 
 size_t RoundUpToMultiple(size_t n, size_t blockSize)
@@ -115,7 +119,7 @@ __device__ __forceinline__ T Shuffle(T input, int srcLane, unsigned int mask)
 #ifdef __HIP_DEVICE_COMPILE__
     // shfl is supported only on Kepler+
     static_assert( __HIP_ARCH_HAS_WARP_SHUFFLE__, "CNTK only supports only Kepler GPU architecture or newer.");
-#if CUDA_VERSION >= 9000
+#if CUDA_VERSION >= 9000 || defined (__HIP_PLATFORM_HCC__)
     return cub::ShuffleIndex(input, srcLane, CUB_PTX_WARP_THREADS, mask); // Need cub > 1.7.0
 #else
     return cub::ShuffleIndex(input, srcLane);
@@ -149,7 +153,8 @@ namespace Operations
 #if __CUDA_ARCH__ >= 600 //TODO: __hip__
         return hrsqrt(a);
 #else
-        return __float2half(rsqrtf(__half2float(a)));
+        //return __float2half(rsqrtf(__half2float(a))); //TODO: PRAS_AMD
+        return (half)(rsqrtf((float)(a)));
 #endif
     }
 }

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "../CNTKv2LibraryDll/API/HalfConverter.hpp"
+#include "hip/hip_runtime.h"
 
 #if !defined(CPUONLY) && __has_include("cuda_fp16.h")
 #include <cuda_fp16.h> // ASSUME CUDA9
@@ -22,17 +23,17 @@ protected:
 
 #if defined(__HIPCC__)
 #define __CUDA_HOSTDEVICE__ __host__ __device__
-#define __INLINE__ __forceinline__
+#define __INLINE__ __forceinline__ inline 
 #else
 #define __CUDA_HOSTDEVICE__
 #define __INLINE__ inline
 #endif
 
-#define __FP16_DECL__ __INLINE__ __CUDA_HOSTDEVICE__
+#define __FP16_DECL__  __INLINE__ __CUDA_HOSTDEVICE__
 
 class alignas(2) half : public __half {
 public:
-    half() = default;
+    __FP16_DECL__ half() = default;
     __FP16_DECL__ half(const half& other) { __x = other.__x; }
     __FP16_DECL__ half& operator=(const half& other) { __x = other.__x; return *this; }
     __FP16_DECL__ half(half&& other) { *this = std::move(other); }
@@ -49,7 +50,8 @@ public:
 #ifndef __HIP_DEVICE_COMPILE__
         CNTK::floatToFloat16(&f, &__x);
 #else
-        *this = half(__float2half(f));
+        //*this = half(__float2half(f)); //TODO: PRAS_AMD
+        *this = half((__half)(f));
 #endif
     }
 
@@ -63,7 +65,8 @@ public:
 #ifndef __HIP_DEVICE_COMPILE__
         CNTK::floatToFloat16(&f, &__x); return *this;
 #else
-        *this = half(__float2half(f)); return *this;
+        //*this = half(__float2half(f)); return *this; //TODO: PRAS_AMD
+        *this = half((__half)(f)); return *this;
 #endif
     }
 
@@ -89,7 +92,8 @@ public:
         CNTK::float16ToFloat(&__x, &f);
         return f;
 #else
-        return __half2float(*this);
+        //return __half2float(*this); //TODO: PRAS_AMD
+        return (float)(*this);
 #endif
     }
 
@@ -101,6 +105,7 @@ public:
     __FP16_DECL__ operator size_t() const { return (size_t)(float)(*this); }
     __FP16_DECL__ operator long() const { return (long)(float)(*this); }
     __FP16_DECL__ operator long long() const { return (long long)(float)(*this); }
+    __FP16_DECL__ operator unsigned long long() const { return (unsigned long long)(float)(*this); }
 #endif
 
 //    __CUDA_HOSTDEVICE__ operator bool() const { return (__x & 0x7FFF) != 0; }
