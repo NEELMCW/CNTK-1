@@ -455,7 +455,7 @@ protected:
             return err;
         };
 #if !defined (__HIP_PLATFORM_HCC__)
-        HIPDNN_CALL(cudnnSetConvolutionGroupCount(*m_conv, (int)m_geometry->Groups()));
+        HIPDNN_CALL(hipdnnSetConvolutionGroupCount(*m_conv, (int)m_geometry->Groups()));
 #endif
         FindBestAlgo(batchSize, m_backDataAlgo, workspaceSizeFinder, deterministicFinder, finder, staticFinder, workspace);
         // Compute gradients with respect to the output tensor (data).
