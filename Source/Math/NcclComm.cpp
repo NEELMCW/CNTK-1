@@ -7,17 +7,20 @@
 
 #ifdef USE_NCCL
 #include "GPUMatrix.h"
+#include <hip/hip_runtime_api.h>
+#ifdef __HIP_PLATFORM_NVCC__
 #include <nccl.h>
 #include <nvml.h>
 #include <cuda_runtime.h>
+#endif
 
 namespace Microsoft { namespace MSR { namespace CNTK {
 
-// allows to write cudaFunction() || "error"   (CUDA runtime)
-static void operator||(cudaError_t rc, const char *msg)
+// allows to write hipFunction() || "error"   (HIP runtime)
+static void operator||(hipError_t rc, const char *msg)
 {
-    if (rc != cudaSuccess)
-        RuntimeError("%s: %s (cuda error %d)", msg, cudaGetErrorString(rc), (int) rc);
+    if (rc != hipSuccess)
+        RuntimeError("%s: %s (hip error %d)", msg, hipGetErrorString(rc), (int) rc);
 }
 
 ncclRedOp_t ncclRedOpFromMpiOp(MPI_Op op)
@@ -32,7 +35,7 @@ ncclRedOp_t ncclRedOpFromMpiOp(MPI_Op op)
 NcclComm::NcclComm(int deviceId, const MPIWrapperPtr& mpi)
     : m_ncclComm(nullptr), m_stream(nullptr)
 {
-    cudaDeviceSynchronize();
+    hipDeviceSynchronize();
     size_t numRanks = mpi->NumNodesInUse();
 
     auto nvmlRes = nvmlInit();
@@ -118,15 +121,15 @@ NcclComm::NcclComm(int deviceId, const MPIWrapperPtr& mpi)
         return;
     }
 
-    cudaStreamCreateWithFlags(&m_stream, cudaStreamDefault)
-        || "cudaStreamCreateWithFlags failed";
+    hipStreamCreateWithFlags(&m_stream, hipStreamDefault)
+        || "hipStreamCreateWithFlags failed";
     fprintf(stderr, "NcclComm: initialized\n");
 }
 
 NcclComm::~NcclComm()
 {
     if (m_stream != nullptr)
-        cudaStreamDestroy(m_stream);
+        hipStreamDestroy(m_stream);
     if (m_ncclComm != nullptr)
         ncclCommDestroy(m_ncclComm);
 }
@@ -183,7 +186,7 @@ void NcclComm::BroadcastImpl(void* buffer, size_t count, MPI_Datatype dtype, int
 
 void NcclComm::Sync()
 {
-    cudaStreamSynchronize(m_stream) || "NcclComm: cudaStreamSynchronize failed";
+    hipStreamSynchronize(m_stream) || "NcclComm: hipStreamSynchronize failed";
 }
 
 }}} // end namespaces

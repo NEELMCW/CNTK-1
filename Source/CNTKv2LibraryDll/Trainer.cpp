@@ -386,8 +386,10 @@ namespace CNTK
             m_rootGradientValue->Data()->SetValue(1.0f);
         else if (aggregateDataType == DataType::Double)
             m_rootGradientValue->Data()->SetValue(1.0);
+#ifdef __HIP_ENABLE_HALF__
         else if (aggregateDataType == DataType::Float16)
             m_rootGradientValue->Data()->SetValue(float16(1.0));
+#endif /*__HIP_ENABLE_HALF__*/
         else
             RuntimeError("DataType %s is not supported for root gradients", DataTypeName(aggregateDataType));
 

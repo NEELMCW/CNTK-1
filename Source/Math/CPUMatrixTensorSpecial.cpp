@@ -204,6 +204,7 @@ bool CPUMatrixSpecialTernaryTensorOpImpl<double>(double, const CPUMatrix<double>
     return false;
 }
 
+#ifdef __HIP_ENABLE_HALF__
 template<>
 bool CPUMatrixSpecialUnaryTensorOpImpl<half>(half, const CPUMatrix<half>&, CPUMatrix<half>&, half, ElementWiseOperator, ElementWiseOperator,
     const array<size_t, 2>&,
@@ -230,6 +231,7 @@ bool CPUMatrixSpecialTernaryTensorOpImpl<half>(half, const CPUMatrix<half>&, con
 {
     return false;
 }
+#endif /*__HIP_ENABLE_HALF__*/
 
 }}}
 

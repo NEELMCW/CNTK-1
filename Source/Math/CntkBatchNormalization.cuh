@@ -6,27 +6,30 @@
 
 #pragma once
 
+#ifdef __HIP_PLATFORM_HCC__ //TODO: __add__ remove when CUB is integrated
+#define CUB_PTX_WARP_THREADS 32
+#endif
+
 namespace Microsoft { namespace MSR { namespace CNTK {
 
 size_t RoundUpToMultiple(size_t n, size_t blockSize)
 {
     return (n + blockSize - 1) / blockSize;
 }
-
-cudaError_t GetLastCudaError()
+hipError_t GetLastCudaError()
 {
-    cudaError_t prelaunchErr = cudaGetLastError();
-    assert(cudaSuccess == prelaunchErr);
-    if (prelaunchErr != cudaSuccess)
+    hipError_t prelaunchErr = hipGetLastError();
+    assert(hipSuccess == prelaunchErr);
+    if (prelaunchErr != hipSuccess)
         return prelaunchErr;
 
 #ifndef NO_SYNC
-    cudaError_t executionErr = cudaStreamSynchronize(GetStream());
-    assert(cudaSuccess == executionErr);
-    if (executionErr != cudaSuccess)
+    hipError_t executionErr = hipStreamSynchronize(GetStream());
+    assert(hipSuccess == executionErr);
+    if (executionErr != hipSuccess)
         return executionErr;
 #endif
-    return cudaSuccess;
+    return hipSuccess;
 }
 /*
 template <int U, typename T>
@@ -49,7 +52,10 @@ template <>
 __device__ __forceinline__ void LoadValues<2, float, float>(const float* src, float dst[2])
 {
     // src must be aligned at 8 bytes boundary.
+#if defined( __HIP_ENABLE_ASSERT__ )
     assert(reinterpret_cast<uintptr_t>(src) % (sizeof(dst)) == 0);
+#endif
+
     auto v = *(const float2*)src;
     dst[0] = v.x;
     dst[1] = v.y;
@@ -59,7 +65,9 @@ template <>
 __device__ __forceinline__ void LoadValues<4, float, float>(const float* src, float dst[4])
 {
     // src must be aligned at 16 bytes boundary.
+#if defined( __HIP_ENABLE_ASSERT__ )
     assert(reinterpret_cast<uintptr_t>(src) % (sizeof(dst)) == 0);
+#endif
     // Can do the following instead (use ld.global.nc.* on CC 3.5+):
     // asm volatile("ld.global.v4.f32 {%0, %1, %2, %3}, [%4];" : "=f"(v.x), "=f"(v.y), "=f"(v.z), "=f"(v.w) : "l"(src));
     // Similar for shared memory (e.g. ld.shared.*)
@@ -90,7 +98,10 @@ template <>
 __device__ __forceinline__ void StoreValues<2, float, float>(const float src[2], float* dst)
 {
     // dst must be aligned at 8 bytes boundary.
+#if defined( __HIP_ENABLE_ASSERT__ )
     assert(reinterpret_cast<uintptr_t>(dst) % (sizeof(src)) == 0);
+#endif
+
     float2 v;
     v.x = src[0];
     v.y = src[1];
@@ -101,7 +112,9 @@ template <>
 __device__ __forceinline__ void StoreValues<4, float, float>(const float src[4], float* dst)
 {
     // dst must be aligned at 16 bytes boundary.
+#if defined( __HIP_ENABLE_ASSERT__ )
     assert(reinterpret_cast<uintptr_t>(dst) % (sizeof(src)) == 0);
+#endif
     float4 v;
     v.x = src[0];
     v.y = src[1];
@@ -113,18 +126,21 @@ __device__ __forceinline__ void StoreValues<4, float, float>(const float src[4],
 template <typename T>
 __device__ __forceinline__ T Shuffle(T input, int srcLane, unsigned int mask)
 {
-#ifdef __CUDA_ARCH__
+#ifdef __HIP_DEVICE_COMPILE__ && defined ( __HIP_ENABLE_CUB__ )
     // shfl is supported only on Kepler+
-    static_assert(__CUDA_ARCH__ >= 300, "CNTK only supports only Kepler GPU architecture or newer.");
-#if CUDA_VERSION >= 9000
-    return cub::ShuffleIndex(input, srcLane, CUB_PTX_WARP_THREADS, mask); // Need cub > 1.7.0
+
+#if defined( __HIP_ENABLE_ASSERT__ )
+    static_assert( __HIP_ARCH_HAS_WARP_SHUFFLE__, "CNTK only supports only Kepler GPU architecture or newer.");
+#endif /*__HIP_ENABLE_ASSERT__*/
+#if CUDA_VERSION >= 9000 || defined (__HIP_PLATFORM_HCC__)
+    return hipcub::ShuffleIndex<CUB_PTX_WARP_THREADS>(input, srcLane, mask); // Need cub > 1.7.0
 #else
-    return cub::ShuffleIndex(input, srcLane);
-#endif
+    return hipcub::ShuffleIndex(input, srcLane);
+#endif /*CUDA_VERSION || __HIP_PLATFORM_HCC__*/
 #else
     assert(false);
     return input; // keep compiler happy
-#endif
+#endif /*__HIP_DEVICE_COMPILE__ && __HIP_ENABLE_CUB__*/
 }
 
 namespace Operations
@@ -135,24 +151,32 @@ namespace Operations
         // __frsqrt_rn intrinsic which performs round-to-nearest-even rounding which adds ~10 other instructions.
         // __frsqrt_rn is unbiased rounding though, need to verify whether it is a better choice for BN implementation.
         //return __frsqrt_rn(a);
+
+#if defined( __HIP_ENABLE_ASSERT__ )
         assert(::isfinite(a) && a > 0);
+#endif
+
         return rsqrtf(a);
     }
 
     __device__ double RSqrt(double a)
     {
+#if defined( __HIP_ENABLE_ASSERT__ )
         assert(::isfinite(a) && a > 0);
+#endif
         return rsqrt(a);
     }
 
-    __device__ half RSqrt(half a)
-    {
-#if __CUDA_ARCH__ >= 600
-        return hrsqrt(a);
+#ifdef __HIP_ENABLE_HALF__
+__device__ half RSqrt(half a) {
+#if __CUDA_ARCH__ >= 600 //TODO: __hip__
+	return hrsqrt(a);
 #else
-        return __float2half(rsqrtf(__half2float(a)));
+	//return __float2half(rsqrtf(__half2float(a))); //TODO: PRAS_AMD
+	return (half)(rsqrtf((float) (a)));
 #endif
-    }
+}
+#endif /*__HIP_ENABLE_HALF__*/
 }
 
 // This function is used to select correct unroll factor.
@@ -191,7 +215,7 @@ void Call2(size_t vectorSize, Targs... args)
 //    m2 value (used to compute variance and inverse standard deviation at the end) - Welford algorithm.
 // 2. Parallel reduction (Chan algorithm) performed by columns (note that
 //    thread block and grid X dimensions go along the vector and Y dimension - along the batch).
-//    As a result, each block has 2 * blockDim.x (mean and inverse stddev) values to write at the end.
+//    As a result, each block has 2 * blockDim.x (hipBlockDim_x) (mean and inverse stddev) values to write at the end.
 //
 // Running mean and variance will be averaged according to an exponential
 // averaging factor (expAvgFactor), taking the running statistics with weight
@@ -226,23 +250,28 @@ __global__ void kComputeBatchMeanAndInvStdDev(int vectorSize, int batchSize,
     typedef typename TypeSelector<ElemType>::comp_t comp_t;
     static_assert(BlockDimX * U == CUB_PTX_WARP_THREADS, "BlockDimX * U must be equal to warp size (32).");
     static_assert((BlockDimX * BlockDimY % CUB_PTX_WARP_THREADS) == 0, "Block size must be a multiple of warp size (32).");
+
+#if defined( __HIP_ENABLE_ASSERT__ )
     assert((vectorSize % U) == 0);
-    assert(blockDim.x == BlockDimX);
-    assert(blockDim.y == BlockDimY);
-    assert(blockDim.z == 1);
-    assert(gridDim.y == 1);
-    assert(gridDim.z == 1);
+    assert(hipBlockDim_x == BlockDimX);
+    assert(hipBlockDim_y == BlockDimY);
+    assert(hipBlockDim_z == 1);
+    assert(hipGridDim_y == 1);
+    assert(hipGridDim_z == 1);
     assert(::isfinite(epsilon) && epsilon > 0);
     assert(::isfinite(expAvgFactor) && 0 <= expAvgFactor && expAvgFactor <= 1);
     assert(::isfinite(blendFactor) && 0 <= blendFactor && blendFactor <= 1);
     assert(batchSize >= 1);
+#endif
 
     if (expAvgFactor != 0 || blendFactor != 1)
     {
-        int irowSrcBase = (blockIdx.x * BlockDimX + threadIdx.x) * U;
+        int irowSrcBase = (hipBlockIdx_x * BlockDimX + hipThreadIdx_x) * U;
         if (irowSrcBase >= vectorSize)
             return;
+#if defined( __HIP_ENABLE_ASSERT__ )
         assert(irowSrcBase + U <= vectorSize);
+#endif
 
         // --- estimate this minibatch's mean/variance
 
@@ -257,8 +286,7 @@ __global__ void kComputeBatchMeanAndInvStdDev(int vectorSize, int batchSize,
             mean[k] = 0;
             m2[k] = 0;
         }
-
-        int icolSrc = threadIdx.y;
+        int icolSrc = hipThreadIdx_y;
         const ElemType* psrc = x + static_cast<size_t>(icolSrc) * vectorSize + irowSrcBase;
         // Stride over all vectors in the batch.
         for (; icolSrc < batchSize; icolSrc += BlockDimY)
@@ -280,7 +308,7 @@ __global__ void kComputeBatchMeanAndInvStdDev(int vectorSize, int batchSize,
         }
 
         // now reduce minibatch mean/variance across threads
-        const int tid = threadIdx.y * BlockDimX + threadIdx.x;
+        const int tid = hipThreadIdx_y * BlockDimX + hipThreadIdx_x;
         const int laneId = tid & 0x1f;
 
         unsigned int mask;
@@ -336,7 +364,7 @@ __global__ void kComputeBatchMeanAndInvStdDev(int vectorSize, int batchSize,
 
         // Accumulate and write final results.
         // REVIEW alexeyk: see if atomicAdd can be used instead, do perf comparison.
-        if (threadIdx.y == 0)
+        if (hipThreadIdx_y == 0)
         {
             // Use simple loop as number of warps is small, 8 at max.
 #pragma unroll
@@ -348,15 +376,15 @@ __global__ void kComputeBatchMeanAndInvStdDev(int vectorSize, int batchSize,
 #pragma unroll
                 for (int k = 0; k < U; k++)
                 {
-                    d[k] = meanRes[threadIdx.x * U + k][i] - mean[k];
+                    d[k] = meanRes[hipThreadIdx_x * U + k][i] - mean[k];
                     comp_t dScaled = d[k] * n2 / nsum;
                     mean[k] += dScaled;
-                    m2[k] += m2Res[threadIdx.x * U + k][i] + d[k] * n * dScaled;
+                    m2[k] += m2Res[hipThreadIdx_x * U + k][i] + d[k] * n * dScaled;
                 }
                 n = nsum;
             }
 
-            size_t idxDstBase = (blockIdx.x * BlockDimX + threadIdx.x) * U;
+            size_t idxDstBase = (hipBlockIdx_x * BlockDimX + hipThreadIdx_x) * U;
             comp_t run[U];
             comp_t x[U];
 
@@ -395,9 +423,9 @@ __global__ void kComputeBatchMeanAndInvStdDev(int vectorSize, int batchSize,
             // at this point, runVariance[] xInvStdDev[] have been updated
         }
     }
-    else if (threadIdx.y == 0)
+    else if (hipThreadIdx_y == 0)
     {
-        size_t idxDstBase = (blockIdx.x * BlockDimX + threadIdx.x) * U;
+        size_t idxDstBase = (hipBlockIdx_x * BlockDimX + hipThreadIdx_x) * U;
         comp_t run[U];
 
         // Copy mean
@@ -423,27 +451,34 @@ __global__ void kComputeSpatialBatchMeanAndInvStdDev(int vectorSize, int spatial
                                                      double epsilon, StatType* xMean, StatType* xInvStdDev)
 {
     typedef typename TypeSelector<ElemType>::comp_t comp_t;
+
+#if defined( __HIP_ENABLE_ASSERT__ )
     static_assert(BlockDimX * U == CUB_PTX_WARP_THREADS, "BlockDimX * U must be equal to warp size (32).");
     static_assert((BlockDimX * BlockDimY % CUB_PTX_WARP_THREADS) == 0, "Block size must be a multiple of warp size (32).");
-    assert(blockDim.x == BlockDimX);
-    assert(blockDim.y == BlockDimY);
-    assert(blockDim.z == 1);
-    assert(gridDim.y == 1);
-    assert(gridDim.z == 1);
+    assert(hipBlockDim_x == BlockDimX);
+    assert(hipBlockDim_y == BlockDimY);
+    assert(hipBlockDim_z == 1);
+    assert(hipGridDim_y == 1);
+    assert(hipGridDim_z == 1);
     assert((spatialSize % U) == 0);
     assert((vectorSize % spatialSize) == 0);
     assert(::isfinite(expAvgFactor) && 0 <= expAvgFactor && expAvgFactor <= 1);
     assert(::isfinite(blendFactor) && 0 <= blendFactor && blendFactor <= 1);
     assert(::isfinite(epsilon) && epsilon > 0);
     assert(batchSize >= 1);
+#endif
 
     if (expAvgFactor != 0 || blendFactor != 1)
     {
-        int irowSrcBase = blockIdx.x * spatialSize + threadIdx.x * U;
+        int irowSrcBase = hipBlockIdx_x * spatialSize + hipThreadIdx_x * U;
         if (irowSrcBase >= vectorSize)
             return;
+
+#if defined( __HIP_ENABLE_ASSERT__ )
         assert(irowSrcBase + U <= vectorSize);
-        int irowSrcLim = (blockIdx.x + 1) * spatialSize;
+#endif
+
+        int irowSrcLim = (hipBlockIdx_x + 1) * spatialSize;
 
         int n = 0;
         comp_t mean[U];
@@ -454,8 +489,7 @@ __global__ void kComputeSpatialBatchMeanAndInvStdDev(int vectorSize, int spatial
             mean[k] = 0;
             m2[k] = 0;
         }
-
-        int icolSrc = threadIdx.y;
+        int icolSrc = hipThreadIdx_y;
         const ElemType* psrcBase = x + static_cast<size_t>(icolSrc) * vectorSize + irowSrcBase;
         // Stride over all vectors in the batch.
         for (; icolSrc < batchSize; icolSrc += BlockDimY)
@@ -481,7 +515,7 @@ __global__ void kComputeSpatialBatchMeanAndInvStdDev(int vectorSize, int spatial
             psrcBase += vectorSize * BlockDimY;
         }
 
-        const int tid = threadIdx.y * BlockDimX + threadIdx.x;
+        const int tid = hipThreadIdx_y * BlockDimX + hipThreadIdx_x;
         const int laneId = tid & 0x1f;
         // First, reduce within warp using shuffle.
         unsigned int mask;
@@ -562,23 +596,23 @@ __global__ void kComputeSpatialBatchMeanAndInvStdDev(int vectorSize, int spatial
             }
 
             // TODO add back special cases
-            runMean[blockIdx.x] = expAvgFactor * mean[0] + (1.0 - expAvgFactor) * runMean[blockIdx.x];
-            xMean[blockIdx.x] = blendFactor * runMean[blockIdx.x] + (1.0 - blendFactor) * mean[0];
+            runMean[hipBlockIdx_x] = expAvgFactor * mean[0] + (1.0 - expAvgFactor) * runMean[hipBlockIdx_x];
+            xMean[hipBlockIdx_x] = blendFactor * runMean[hipBlockIdx_x] + (1.0 - blendFactor) * mean[0];
 
             comp_t runV = batchSize * spatialSize == 1 ? 0 : m2[0] / (batchSize * spatialSize - 1);
-            runVariance[blockIdx.x] = expAvgFactor * runV + (1.0 - expAvgFactor) * runVariance[blockIdx.x];
-            xInvStdDev[blockIdx.x] = Operations::RSqrt(static_cast<comp_t>(m2[0] / (batchSize * spatialSize) + (comp_t)epsilon));
+            runVariance[hipBlockIdx_x] = expAvgFactor * runV + (1.0 - expAvgFactor) * runVariance[hipBlockIdx_x];
+            xInvStdDev[hipBlockIdx_x] = Operations::RSqrt(static_cast<comp_t>(m2[0] / (batchSize * spatialSize) + (comp_t)epsilon));
             if (blendFactor != 0)
             {
-                comp_t runInvStdDev = Operations::RSqrt(static_cast<comp_t>((comp_t)runVariance[blockIdx.x] + (comp_t)epsilon));
-                xInvStdDev[blockIdx.x] = blendFactor * runInvStdDev + (1.0 - blendFactor) * xInvStdDev[blockIdx.x];
+                comp_t runInvStdDev = Operations::RSqrt(static_cast<comp_t>((comp_t)runVariance[hipBlockIdx_x] + (comp_t)epsilon));
+                xInvStdDev[hipBlockIdx_x] = blendFactor * runInvStdDev + (1.0 - blendFactor) * xInvStdDev[hipBlockIdx_x];
             }
         }
     }
-    else if (threadIdx.y == 0 && threadIdx.x == 0)
+    else if (hipThreadIdx_y == 0 && hipThreadIdx_x == 0)
     {
-        xMean[blockIdx.x] = runMean[blockIdx.x];
-        xInvStdDev[blockIdx.x] = Operations::RSqrt(static_cast<comp_t>((comp_t)runVariance[blockIdx.x] + (comp_t)epsilon));
+        xMean[hipBlockIdx_x] = runMean[hipBlockIdx_x];
+        xInvStdDev[hipBlockIdx_x] = Operations::RSqrt(static_cast<comp_t>((comp_t)runVariance[hipBlockIdx_x] + (comp_t)epsilon));
     }
 }
 
@@ -595,7 +629,7 @@ struct ComputeBatchMeanAndInvStdDev
                      StatType* runMean, StatType* runVariance,  // (in/out) running mean/variance, gets updated with current minibatch
                      double epsilon,
                      StatType* xMean, StatType* xInvStdDev,     // (out) actual interpolated mean/stddev that are used to normalize. Returned since needed in backprop.
-                     cudaStream_t stream)
+                     hipStream_t stream)
     {
         assert((vectorSize % U) == 0);
         assert(batchSize >= 1);
@@ -605,7 +639,7 @@ struct ComputeBatchMeanAndInvStdDev
         auto bdim = dim3(BlockDimX, BlockDimY);
         // Create grid with only one block in y(batch)-dimension as kernel uses striding.
         auto gdim = dim3(static_cast<unsigned int>(RoundUpToMultiple(vectorSize, BlockDimX * U)));
-        kComputeBatchMeanAndInvStdDev<BlockDimX, BlockDimY, U, ElemType, StatType><<<gdim, bdim, 0, stream>>>(
+        hipLaunchKernelGGL((kComputeBatchMeanAndInvStdDev<BlockDimX, BlockDimY, U, ElemType, StatType>), dim3(gdim), dim3(bdim), 0, stream,
             static_cast<int>(vectorSize), static_cast<int>(batchSize),
             x, expAvgFactor, blendFactor, runMean, runVariance, epsilon, xMean, xInvStdDev);
     }
@@ -617,7 +651,7 @@ struct ComputeSpatialBatchMeanAndInvStdDev
     template <typename ElemType, typename StatType>
     static void Call(size_t vectorSize, size_t spatialSize, size_t batchSize, const ElemType* x,
                         double expAvgFactor, double blendFactor, StatType* runMean, StatType* runVariance,
-                        double epsilon, StatType* xMean, StatType* xInvStdDev, cudaStream_t stream)
+                        double epsilon, StatType* xMean, StatType* xInvStdDev, hipStream_t stream)
     {
         assert((vectorSize % spatialSize) == 0);
         assert((spatialSize % U) == 0);
@@ -629,12 +663,11 @@ struct ComputeSpatialBatchMeanAndInvStdDev
         // Create grid with only one block in y(batch)-dimension as kernel uses striding.
         // Each thread block processes a single whole feature map independently (i.e. reduces over W, H and N dimensions).
         auto gdim = dim3(static_cast<unsigned int>(vectorSize / spatialSize));
-        kComputeSpatialBatchMeanAndInvStdDev<BlockDimX, BlockDimY, U, ElemType, StatType><<<gdim, bdim, 0, stream>>>(
+        hipLaunchKernelGGL((kComputeSpatialBatchMeanAndInvStdDev<BlockDimX, BlockDimY, U, ElemType, StatType>), dim3(gdim), dim3(bdim), 0, stream,
             static_cast<int>(vectorSize), static_cast<int>(spatialSize), static_cast<int>(batchSize),
             x, expAvgFactor, blendFactor, runMean, runVariance, epsilon, xMean, xInvStdDev);
     }
 };
-
 //--------------------------------------------------------------------
 // Forward propagation
 // All functions accept input/outputs tensors in column-major format where each column is a vector of a minibatch.
@@ -652,30 +685,35 @@ __global__ void kNormalizeBatchTraining(int vectorSize, int spatialSize, int bat
     const StatType* batchMean, StatType* batchInvStdDev)
 {
     typedef typename TypeSelector<ElemType>::comp_t comp_t;
+#if defined( __HIP_ENABLE_ASSERT__ )
     static_assert(BlockDimX * U == CUB_PTX_WARP_THREADS, "BlockDimX * U must be equal to warp size (32).");
     static_assert((BlockDimX * BlockDimY % CUB_PTX_WARP_THREADS) == 0, "Block size must be a multiple of warp size (32).");
-    assert(blockDim.x == BlockDimX);
-    assert(blockDim.y == BlockDimY);
-    assert(blockDim.z == 1);
-    assert(gridDim.y == 1);
-    assert(gridDim.z == 1);
+    assert(hipBlockDim_x == BlockDimX);
+    assert(hipBlockDim_y == BlockDimY);
+    assert(hipBlockDim_z == 1);
+    assert(hipGridDim_y == 1);
+    assert(hipGridDim_z == 1);
     assert((vectorSize % U) == 0);
     assert(!Spatial || (spatialSize % U) == 0);
     assert((vectorSize % spatialSize) == 0);
+#endif
 
-    int irowBase = (blockIdx.x * BlockDimX + threadIdx.x) * U;
+    int irowBase = (hipBlockIdx_x * BlockDimX + hipThreadIdx_x) * U;
     if (irowBase >= vectorSize)
         return;
+
+#if defined( __HIP_ENABLE_ASSERT__ )
     assert(irowBase + U <= vectorSize);
+#endif
 
     __shared__ comp_t meanS[BlockDimX * U];
     __shared__ comp_t invStdDevS[BlockDimX * U];
     __shared__ comp_t scaleS[BlockDimX * U];
     __shared__ comp_t biasS[BlockDimX * U];
-    int offs = threadIdx.x * U;
+    int offs = hipThreadIdx_x * U;
 
     // REVIEW alexeyk: optimize smem usage, reduce transaction count (is it worth it?).
-    if (threadIdx.y == 0)
+    if (hipThreadIdx_y == 0)
     {
         if (Spatial)
         {
@@ -715,12 +753,12 @@ __global__ void kNormalizeBatchTraining(int vectorSize, int spatialSize, int bat
     LoadValues<U>(scaleS + offs, scale);
     LoadValues<U>(biasS + offs, bias);
 
-    int icol = blockIdx.y * BlockDimY + threadIdx.y;
+    int icol = hipBlockIdx_y * BlockDimY + hipThreadIdx_y;
+    size_t stride = static_cast<size_t>(hipGridDim_y * BlockDimY) * vectorSize;
     size_t startOffs = static_cast<size_t>(icol) * vectorSize + irowBase;
     const ElemType* psrc = x + startOffs;
     ElemType* pdst = y + startOffs;
-    size_t stride = static_cast<size_t>(gridDim.y * BlockDimY) * vectorSize;
-    for (; icol < batchSize; icol += gridDim.y * BlockDimY, psrc += stride, pdst += stride)
+    for (; icol < batchSize; icol += hipGridDim_y * BlockDimY, psrc += stride, pdst += stride)
     {
         comp_t val[U];
         LoadValues<U>(psrc, val);
@@ -743,10 +781,12 @@ struct NormalizeBatchTraining
                      const StatType* bnScale, const StatType* bnBias,              // (in) scale/bias to denormalize with
                      const StatType* runningMean, const StatType* runningVariance, // (in) running mean/variance
                      const StatType* batchMean, StatType* batchInvStdDev,          // (in) batch mean/stddev to normalize with
-                     cudaStream_t stream)
+                     hipStream_t stream)
     {
+#if defined( __HIP_ENABLE_ASSERT__ )
         assert((vectorSize % U) == 0);
         assert(batchSize >= 1);
+#endif
 
         const int BlockDimX = 32 / U;
         const int BlockDimY = 4 * U;
@@ -756,14 +796,14 @@ struct NormalizeBatchTraining
         if (spatial)
         {
             if (normalizeRunningStats)
-                kNormalizeBatchTraining<BlockDimX, BlockDimY, true, true, U, ElemType, StatType><<<gdim, bdim, 0, stream>>>(
+                hipLaunchKernelGGL((kNormalizeBatchTraining<BlockDimX, BlockDimY, true, true, U, ElemType, StatType>), dim3(gdim), dim3(bdim), 0, stream, 
                     (int)vectorSize, (int)spatialSize, (int)batchSize,
                     epsilon,
                     x, y, bnScale, bnBias,
                     runningMean, runningVariance,
                     batchMean, batchInvStdDev);
             else
-                kNormalizeBatchTraining<BlockDimX, BlockDimY, true, false, U, ElemType, StatType><<<gdim, bdim, 0, stream>>>(
+                hipLaunchKernelGGL((kNormalizeBatchTraining<BlockDimX, BlockDimY, true, false, U, ElemType, StatType>), dim3(gdim), dim3(bdim), 0, stream, 
                     (int)vectorSize, (int)spatialSize, (int)batchSize,
                     epsilon,
                     x, y, bnScale, bnBias,
@@ -773,14 +813,14 @@ struct NormalizeBatchTraining
         else
         {
             if (normalizeRunningStats)
-                kNormalizeBatchTraining<BlockDimX, BlockDimY, false, true, U, ElemType, StatType><<<gdim, bdim, 0, stream>>>(
+                hipLaunchKernelGGL((kNormalizeBatchTraining<BlockDimX, BlockDimY, false, true, U, ElemType, StatType>), dim3(gdim), dim3(bdim), 0, stream, 
                     (int)vectorSize, (int)spatialSize, (int)batchSize,
                     epsilon,
                     x, y, bnScale, bnBias,
                     runningMean, runningVariance,
                     batchMean, batchInvStdDev);
             else
-                kNormalizeBatchTraining<BlockDimX, BlockDimY, false, false, U, ElemType, StatType><<<gdim, bdim, 0, stream>>>(
+                hipLaunchKernelGGL((kNormalizeBatchTraining<BlockDimX, BlockDimY, false, false, U, ElemType, StatType>), dim3(gdim), dim3(bdim), 0, stream, 
                     (int)vectorSize, (int)spatialSize, (int)batchSize,
                     epsilon,
                     x, y, bnScale, bnBias,
@@ -803,39 +843,45 @@ __global__ void kComputeScaleAndBiasGradients(int vectorSize, int batchSize, con
                                               const StatType* savedMean, const StatType* savedInvStdDev)
 {
     typedef typename TypeSelector<ElemType>::comp_t comp_t;
+
+#if defined( __HIP_ENABLE_ASSERT__ )
     static_assert(BlockDimX * U == CUB_PTX_WARP_THREADS, "BlockDimX * U must be equal to warp size (32).");
     static_assert((BlockDimX * BlockDimY % CUB_PTX_WARP_THREADS) == 0, "Block size must be a multiple of warp size (32).");
     static_assert(((BlockDimY - 1) & BlockDimY) == 0, "BlockDimY must be a power of 2.");
     assert((vectorSize % U) == 0);
-    assert(blockDim.x == BlockDimX);
-    assert(blockDim.y == BlockDimY);
-    assert(blockDim.z == 1);
-    assert(gridDim.y == 1);
-    assert(gridDim.z == 1);
+    assert(hipBlockDim_x == BlockDimX);
+    assert(hipBlockDim_y == BlockDimY);
+    assert(hipBlockDim_z == 1);
+    assert(hipGridDim_y == 1);
+    assert(hipGridDim_z == 1);
+#endif
 
     // REVIEW alexeyk: first part looks very similar to kComputeBatchMeanAndInvStdDev, any chance to refactor?
-    int irowSrcBase = (blockIdx.x * BlockDimX + threadIdx.x) * U;
+    int irowSrcBase = (hipBlockIdx_x * BlockDimX + hipThreadIdx_x) * U;
     if (irowSrcBase >= vectorSize)
         return;
+
+#if defined( __HIP_ENABLE_ASSERT__ )
     assert(irowSrcBase + U <= vectorSize);
+#endif
 
     comp_t mean[U];
     comp_t invStdDev[U];
     __shared__ comp_t meanS[BlockDimX * U];
     __shared__ comp_t invStdDevS[BlockDimX * U];
     // Read mean and inv std dev.
-    if (threadIdx.y == 0)
+    if (hipThreadIdx_y == 0)
     {
         LoadValues<U>(savedMean + irowSrcBase, mean);
         LoadValues<U>(savedInvStdDev + irowSrcBase, invStdDev);
-        StoreValues<U>(mean, &meanS[threadIdx.x * U]);
-        StoreValues<U>(invStdDev, &invStdDevS[threadIdx.x * U]);
+        StoreValues<U>(mean, &meanS[hipThreadIdx_x * U]);
+        StoreValues<U>(invStdDev, &invStdDevS[hipThreadIdx_x * U]);
     }
     __syncthreads();
-    if (threadIdx.y != 0)
+    if (hipThreadIdx_y != 0)
     {
-        LoadValues<U>(&meanS[threadIdx.x * U], mean);
-        LoadValues<U>(&invStdDevS[threadIdx.x * U], invStdDev);
+        LoadValues<U>(&meanS[hipThreadIdx_x * U], mean);
+        LoadValues<U>(&invStdDevS[hipThreadIdx_x * U], invStdDev);
     }
 
     comp_t ds[U];
@@ -847,7 +893,7 @@ __global__ void kComputeScaleAndBiasGradients(int vectorSize, int batchSize, con
         db[k] = 0;
     }
 
-    int icolSrc = threadIdx.y;
+    int icolSrc = hipThreadIdx_y;
     size_t startOffs = static_cast<size_t>(icolSrc) * vectorSize + irowSrcBase;
     const ElemType* px = x + startOffs;
     const ElemType* pdy = dy + startOffs;
@@ -870,8 +916,8 @@ __global__ void kComputeScaleAndBiasGradients(int vectorSize, int batchSize, con
     // Final reduction.
     __shared__ comp_t dsS[BlockDimY][BlockDimX * U];
     __shared__ comp_t dbS[BlockDimY][BlockDimX * U];
-    StoreValues<U>(ds, &dsS[threadIdx.y][threadIdx.x * U]);
-    StoreValues<U>(db, &dbS[threadIdx.y][threadIdx.x * U]);
+    StoreValues<U>(ds, &dsS[hipThreadIdx_y][hipThreadIdx_x * U]);
+    StoreValues<U>(db, &dbS[hipThreadIdx_y][hipThreadIdx_x * U]);
     __syncthreads();
     // Very simple block reduction. As the block y dim is small (e.g. 16) then the loop
     // is executed very few times (e.g. 4) so the performance is good.
@@ -879,26 +925,26 @@ __global__ void kComputeScaleAndBiasGradients(int vectorSize, int batchSize, con
 #pragma unroll
     for (int y = BlockDimY / 2; y > 0; y /= 2)
     {
-        if (threadIdx.y < y)
+        if (hipThreadIdx_y < y)
         {
 #pragma unroll
             for (int k = 0; k < U; k++)
             {
-                dsS[threadIdx.y][threadIdx.x * U + k] += dsS[threadIdx.y + y][threadIdx.x * U + k];
-                dbS[threadIdx.y][threadIdx.x * U + k] += dbS[threadIdx.y + y][threadIdx.x * U + k];
+                dsS[hipThreadIdx_y][hipThreadIdx_x * U + k] += dsS[hipThreadIdx_y + y][hipThreadIdx_x * U + k];
+                dbS[hipThreadIdx_y][hipThreadIdx_x * U + k] += dbS[hipThreadIdx_y + y][hipThreadIdx_x * U + k];
             }
             __syncthreads();
         }
     }
 
     // Write results.
-    if (threadIdx.y == 0)
+    if (hipThreadIdx_y == 0)
     {
 #pragma unroll
         for (int k = 0; k < U; k++)
         {
-            dScale[irowSrcBase + k] = dsS[0][threadIdx.x * U + k];
-            dBias[irowSrcBase + k] = dbS[0][threadIdx.x * U + k];
+            dScale[irowSrcBase + k] = dsS[0][hipThreadIdx_x * U + k];
+            dBias[irowSrcBase + k] = dbS[0][hipThreadIdx_x * U + k];
         }
     }
 }
@@ -908,32 +954,39 @@ __global__ void kComputeSpatialScaleAndBiasGradients(int vectorSize, int spatial
                                                         StatType* dScale, StatType* dBias, const StatType* savedMean, const StatType* savedInvStdDev)
 {
     typedef typename TypeSelector<ElemType>::comp_t comp_t;
+
+#if defined( __HIP_ENABLE_ASSERT__ )
     static_assert(BlockDimX * U == CUB_PTX_WARP_THREADS, "BlockDimX * U must be equal to warp size (32).");
     static_assert((BlockDimX * BlockDimY % CUB_PTX_WARP_THREADS) == 0, "Block size must be a multiple of warp size (32).");
-    assert(blockDim.x == BlockDimX);
-    assert(blockDim.y == BlockDimY);
-    assert(blockDim.z == 1);
-    assert(gridDim.y == 1);
-    assert(gridDim.z == 1);
+    assert(hipBlockDim_x == BlockDimX);
+    assert(hipBlockDim_y == BlockDimY);
+    assert(hipBlockDim_z == 1);
+    assert(hipGridDim_y == 1);
+    assert(hipGridDim_z == 1);
     assert((spatialSize % U) == 0);
     assert((vectorSize % spatialSize) == 0);
+#endif
 
-    int irowBase = blockIdx.x * spatialSize + threadIdx.x * U;
+    int irowBase = hipBlockIdx_x * spatialSize + hipThreadIdx_x * U;
     if (irowBase >= vectorSize)
         return;
+
+#if defined( __HIP_ENABLE_ASSERT__ )
     assert(irowBase + U <= vectorSize);
-    int irowLim = (blockIdx.x + 1) * spatialSize;
+#endif
+
+    int irowLim = (hipBlockIdx_x + 1) * spatialSize;
 
     comp_t mean;
     comp_t invStdDev;
     __shared__ comp_t meanS;
     __shared__ comp_t invStdDevS;
-    const int tid = threadIdx.y * BlockDimX + threadIdx.x;
+    const int tid = hipThreadIdx_y * BlockDimX + hipThreadIdx_x;
     // Read mean and inv std dev.
     if (tid == 0)
     {
-        meanS = savedMean[blockIdx.x];
-        invStdDevS = savedInvStdDev[blockIdx.x];
+        meanS = savedMean[hipBlockIdx_x];
+        invStdDevS = savedInvStdDev[hipBlockIdx_x];
     }
     __syncthreads();
     if (tid != 0)
@@ -951,7 +1004,7 @@ __global__ void kComputeSpatialScaleAndBiasGradients(int vectorSize, int spatial
         db[k] = 0;
     }
 
-    int icolSrc = threadIdx.y;
+    int icolSrc = hipThreadIdx_y;
     size_t startOffs = static_cast<size_t>(icolSrc) * vectorSize + irowBase;
     const ElemType* pxBase = x + startOffs;
     const ElemType* pdyBase = dy + startOffs;
@@ -977,7 +1030,8 @@ __global__ void kComputeSpatialScaleAndBiasGradients(int vectorSize, int spatial
         }
     }
     __syncthreads();
-    using BlockReduce = cub::BlockReduce<comp_t, BlockDimX, cub::BLOCK_REDUCE_WARP_REDUCTIONS, BlockDimY>;
+#ifdef __HIP_ENABLE_CUB__
+    using BlockReduce = hipcub::BlockReduce<comp_t, BlockDimX, hipcub::BLOCK_REDUCE_WARP_REDUCTIONS, BlockDimY>;
     // Note: must use separate temp storages for each reduction.
     __shared__ typename BlockReduce::TempStorage tmp1;
     comp_t dsRes = BlockReduce(tmp1).Sum(ds);
@@ -985,9 +1039,10 @@ __global__ void kComputeSpatialScaleAndBiasGradients(int vectorSize, int spatial
     comp_t dbRes = BlockReduce(tmp2).Sum(db);
     if (tid == 0)
     {
-        dScale[blockIdx.x] = dsRes;
-        dBias[blockIdx.x] = dbRes;
+        dScale[hipBlockIdx_x] = dsRes;
+        dBias[hipBlockIdx_x] = dbRes;
     }
+#endif /*__HIP_ENABLE_CUB__*/
 }
 
 template <int U>
@@ -995,16 +1050,20 @@ struct ComputeScaleAndBiasGradients
 {
     template <typename ElemType, typename StatType>
     static void Call(size_t vectorSize, size_t batchSize, const ElemType* x, const ElemType* dy,
-        StatType* dScale, StatType* dBias, const StatType* savedMean, const StatType* savedInvStdDev, cudaStream_t stream)
+        StatType* dScale, StatType* dBias, const StatType* savedMean, const StatType* savedInvStdDev, hipStream_t stream)
     {
+
+#if defined( __HIP_ENABLE_ASSERT__ )
         assert((vectorSize % U) == 0);
         assert(batchSize >= 1);
+#endif
+
         const int BlockDimX = 32 / U;
         const int BlockDimY = 4 * U;
         auto bdim = dim3(BlockDimX, BlockDimY);
         // Create a grid that has uses striding in y-dimension to cover whole minibatch.
         auto gdim = dim3(static_cast<unsigned int>(RoundUpToMultiple(vectorSize, BlockDimX * U)));
-        kComputeScaleAndBiasGradients<BlockDimX, BlockDimY, U, ElemType, StatType><<<gdim, bdim, 0, stream>>>(
+        hipLaunchKernelGGL((kComputeScaleAndBiasGradients<BlockDimX, BlockDimY, U, ElemType, StatType>), dim3(gdim), dim3(bdim), 0, stream, 
             static_cast<int>(vectorSize), static_cast<int>(batchSize), x, dy, dScale, dBias, savedMean, savedInvStdDev);
     }
 };
@@ -1014,18 +1073,20 @@ struct ComputeSpatialScaleAndBiasGradients
 {
     template <typename ElemType, typename StatType>
     static void Call(size_t vectorSize, size_t spatialSize, size_t batchSize, const ElemType* x, const ElemType* dy,
-                     StatType* dScale, StatType* dBias, const StatType* savedMean, const StatType* savedInvStdDev, cudaStream_t stream)
+                     StatType* dScale, StatType* dBias, const StatType* savedMean, const StatType* savedInvStdDev, hipStream_t stream)
     {
+#if defined( __HIP_ENABLE_ASSERT__ )
         assert((spatialSize % U) == 0);
         assert((vectorSize % spatialSize) == 0);
         assert(batchSize >= 1);
+#endif
 
         const int BlockDimX = 32 / U;
         const int BlockDimY = 4 * U;
         auto bdim = dim3(BlockDimX, BlockDimY);
         // Create a grid that has uses striding in y-dimension to cover whole minibatch.
         auto gdim = dim3(static_cast<unsigned int>(vectorSize / spatialSize));
-        kComputeSpatialScaleAndBiasGradients<BlockDimX, BlockDimY, U, ElemType, StatType><<<gdim, bdim, 0, stream>>>(
+        hipLaunchKernelGGL((kComputeSpatialScaleAndBiasGradients<BlockDimX, BlockDimY, U, ElemType, StatType>), dim3(gdim), dim3(bdim), 0, stream, 
             static_cast<int>(vectorSize), static_cast<int>(spatialSize), static_cast<int>(batchSize), x, dy, dScale, dBias, savedMean, savedInvStdDev);
     }
 };
@@ -1037,21 +1098,28 @@ __global__ void kBackpropagateBatchNormGradients(int vectorSize, int spatialSize
                                                     const StatType* savedMean, const StatType* savedInvStdDev)
 {
     typedef typename TypeSelector<ElemType>::comp_t comp_t;
+
+#if defined( __HIP_ENABLE_ASSERT__ )
     static_assert(BlockDimX * U == CUB_PTX_WARP_THREADS, "BlockDimX * U must be equal to warp size (32).");
     static_assert((BlockDimX * BlockDimY % CUB_PTX_WARP_THREADS) == 0, "Block size must be a multiple of warp size (32).");
-    assert(blockDim.x == BlockDimX);
-    assert(blockDim.y == BlockDimY);
-    assert(blockDim.z == 1);
-    assert(gridDim.z == 1);
+    assert(hipBlockDim_x == BlockDimX);
+    assert(hipBlockDim_y == BlockDimY);
+    assert(hipBlockDim_z == 1);
+    assert(hipGridDim_z == 1);
     assert((vectorSize % U) == 0);
     assert(Spatial || spatialSize == 1);
     assert(!Spatial || (spatialSize % U) == 0);
     assert((vectorSize % spatialSize) == 0);
+#endif
 
-    int irowBase = (blockIdx.x * BlockDimX + threadIdx.x) * U;
+    int irowBase = (hipBlockIdx_x * BlockDimX + hipThreadIdx_x) * U;
     if (irowBase >= vectorSize)
         return;
+
+#if defined( __HIP_ENABLE_ASSERT__ )
     assert(irowBase + U <= vectorSize);
+#endif
+
     comp_t scale[U];
     comp_t ds[U];
     comp_t db[U];
@@ -1080,13 +1148,13 @@ __global__ void kBackpropagateBatchNormGradients(int vectorSize, int spatialSize
         LoadValues<U>(savedInvStdDev + irowBase, invStdDev);
     }
 
-    int icol = blockIdx.y * BlockDimY + threadIdx.y;
+    int icol = hipBlockIdx_y * BlockDimY + hipThreadIdx_y;
     size_t startOffs = static_cast<size_t>(icol) * vectorSize + irowBase;
     const ElemType* px = x + startOffs;
     const ElemType* pdy = dy + startOffs;
     ElemType* pdx = dx + startOffs;
-    size_t stride = static_cast<size_t>(gridDim.y * BlockDimY) * vectorSize;
-    for (; icol < batchSize; icol += gridDim.y * BlockDimY, px += stride, pdy += stride, pdx += stride)
+    size_t stride = static_cast<size_t>(hipGridDim_y * BlockDimY) * vectorSize;
+    for (; icol < batchSize; icol += hipGridDim_y * BlockDimY, px += stride, pdy += stride, pdx += stride)
     {
         comp_t xCur[U];
         comp_t dyCur[U];
@@ -1129,10 +1197,13 @@ struct BackpropagateBatchNormGradients
     template <typename ElemType, typename StatType>
     static void Call(size_t vectorSize, size_t spatialSize, size_t batchSize, bool spatial, const ElemType* x, const ElemType* dy, ElemType* dx,
                      const StatType* bnScale, StatType mbStatsWeight, const StatType* dScale,
-                     const StatType* dBias, const StatType* savedMean, const StatType* savedInvStdDev, cudaStream_t stream)
+                     const StatType* dBias, const StatType* savedMean, const StatType* savedInvStdDev, hipStream_t stream)
     {
+#if defined( __HIP_ENABLE_ASSERT__ )
         assert((vectorSize % U) == 0);
         assert(batchSize >= 1);
+#endif
+
         const int BlockDimX = 32 / U;
         const int BlockDimY = 4 * U;
         auto bdim = dim3(BlockDimX, BlockDimY);
@@ -1140,15 +1211,14 @@ struct BackpropagateBatchNormGradients
                          static_cast<unsigned int>(RoundUpToMultiple(batchSize,  BlockDimY)));
         if (spatial)
         {
-            kBackpropagateBatchNormGradients<BlockDimX, BlockDimY, true/*spatial*/, U, ElemType, StatType><<<gdim, bdim, 0, stream>>>(
+            hipLaunchKernelGGL((kBackpropagateBatchNormGradients<BlockDimX, BlockDimY, true/*spatial*/, U, ElemType, StatType>), dim3(gdim), dim3(bdim), 0, stream, 
                 static_cast<int>(vectorSize), static_cast<int>(spatialSize), static_cast<int>(batchSize), x, dy, dx, bnScale, mbStatsWeight, dScale, dBias, savedMean, savedInvStdDev);
         }
         else
         {
-            kBackpropagateBatchNormGradients<BlockDimX, BlockDimY, false/*not spatial*/, U><<<gdim, bdim, 0, stream>>>(
+            hipLaunchKernelGGL((kBackpropagateBatchNormGradients<BlockDimX, BlockDimY, false/*not spatial*/, U>), dim3(gdim), dim3(bdim), 0, stream, 
                 static_cast<int>(vectorSize), static_cast<int>(spatialSize), static_cast<int>(batchSize), x, dy, dx, bnScale, mbStatsWeight, dScale, dBias, savedMean, savedInvStdDev);
         }
     }
 };
-
 }}}

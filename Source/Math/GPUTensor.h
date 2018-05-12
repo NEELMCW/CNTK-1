@@ -11,6 +11,7 @@
 
 namespace Microsoft { namespace MSR { namespace CNTK {
 
+
 // GPUMatrix::TensorOp() interfaces with actual tensor code through these two functions, which are independent of the GPUMatrix class
 
 #define C_size_t CUDA_LONG

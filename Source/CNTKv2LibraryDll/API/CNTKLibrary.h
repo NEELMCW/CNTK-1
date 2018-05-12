@@ -114,8 +114,10 @@ namespace CNTK
             return DataType::Float;
         else if (std::is_same<ElementType, double>())
             return DataType::Double;
+#ifdef __HIP_ENABLE_HALF__
         else if (std::is_same<ElementType, float16>())
             return DataType::Float16;
+#endif /*__HIP_ENABLE_HALF__*/
         else if (std::is_same<ElementType, int8_t>())
             return DataType::Int8;
         else if (std::is_same<ElementType, char>())
@@ -130,8 +132,10 @@ namespace CNTK
             return "Float";
         else if (dataType == DataType::Double)
             return "Double";
+#ifdef __HIP_ENABLE_HALF__
         else if (dataType == DataType::Float16)
             return "Float16";
+#endif /*__HIP_ENABLE_HALF__*/
         else if (dataType == DataType::Int8)
             return "Int8";
         else
@@ -771,9 +775,11 @@ namespace CNTK
             case DataType::Double:
                 SetValue(value);
                 break;
+#ifdef __HIP_ENABLE_HALF__
             case DataType::Float16:
                 SetValue(float16::create(value));
                 break;
+#endif /*__HIP_ENABLE_HALF__*/
             case DataType::Int8:
                 SetValue((int8_t)value);
                 break;
@@ -874,7 +880,9 @@ namespace CNTK
         ///
         /// Fill 'this' NDArrayView with the specified value. The underlying DataType of 'this' view should be DataType::Double.
         ///
+#ifdef __HIP_ENABLE_HALF__
         CNTK_API void SetValue(float16 value);
+#endif /*__HIP_ENABLE_HALF__*/
 
         ///
         /// Fill 'this' NDArrayView with the specified value. The underlying DataType of 'this' view should be DataType::Int8.
@@ -2951,10 +2959,12 @@ namespace CNTK
             {
                 CopyVariableValueToVector<double>(outputVariable, sequences);
             }
+#ifdef __HIP_ENABLE_HALF__
             else if (dataType == DataType::Float16)
             {
                 CopyVariableValueToVector<float16>(outputVariable, sequences);
             }
+#endif /*__HIP_ENABLE_HALF__*/
         }
 
         ///

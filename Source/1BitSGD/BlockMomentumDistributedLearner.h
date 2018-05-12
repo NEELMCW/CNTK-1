@@ -463,8 +463,10 @@ namespace CNTK
                 SynchronizeModel<double>(parameters);
             else if (parameters.front()->GetDataType() == DataType::Float)
                 SynchronizeModel<float>(parameters);
+#ifdef __HIP_ENABLE_HALF__
             else if (parameters.front()->GetDataType() == DataType::Float16)
                 SynchronizeModel<half>(parameters);
+#endif /*__HIP_ENABLE_HALF__*/
             else
                 RuntimeError("Unsupported type.");
 

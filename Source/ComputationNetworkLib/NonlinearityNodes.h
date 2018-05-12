@@ -446,7 +446,9 @@ public:
 
 template class HardmaxNode<float>;
 template class HardmaxNode<double>;
+#ifdef __HIP_ENABLE_HALF__
 template class HardmaxNode<half>;
+#endif /*__HIP_ENABLE_HALF__*/
 
 
 
@@ -753,6 +755,7 @@ public:
 
 // Define macro that defines and instantiates different comparison nodes.
 // Unfortuanately the C++ 11 type alias syntax doesn't work for mpic++ so we use this more ugly way.
+#ifdef __HIP_ENABLE_HALF__
 #define DefineComparisonNode(ClassName, compType, polarity)             \
 template <class ElemType>                                               \
 class ClassName : public ComparisonNode<ElemType, compType, polarity>   \
@@ -772,6 +775,29 @@ public:                                                                 \
 template class ClassName<float>;                                        \
 template class ClassName<double>;                                       \
 template class ClassName<half>;
+#else  //__HIP_ENABLE_HALF__
+
+#define DefineComparisonNode(ClassName, compType, polarity)             \
+template <class ElemType>                                               \
+class ClassName : public ComparisonNode<ElemType, compType, polarity>   \
+{                                                                       \
+    typedef ComparisonNode<ElemType, compType, polarity> Base;          \
+    UsingComputationNodeMembersBoilerplate;                             \
+                                                                        \
+public:                                                                 \
+    static const std::wstring TypeName() { return Base::TypeName(); }   \
+    DeclareConstructorFromConfigWithNumInputs(ClassName);               \
+    ClassName(DEVICEID_TYPE deviceId, const wstring& name)              \
+            : Base(deviceId, name)                                      \
+    {                                                                   \
+    }                                                                   \
+};                                                                      \
+                                                                        \
+template class ClassName<float>;                                        \
+template class ClassName<double>;
+
+#endif //__HIP_ENABLE_HALF__
+
 
 DefineComparisonNode(LessNode,         -1, 0)
 DefineComparisonNode(EqualNode,         0, 0)

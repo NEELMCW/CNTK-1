@@ -64,6 +64,11 @@ else
   $(error Cannot find $(BUILD_TOP)/Config.make.  Please see the CNTK documentation at https://docs.microsoft.com/en-us/cognitive-toolkit/Setup-CNTK-on-Linux for configuration instructions.)
 endif
 
+ifdef HIP_PATH
+HIPCC=${HIP_PATH}/bin/hipcc
+HIP_PLATFORM=$(shell ${HIP_PATH}/bin/hipconfig --compiler)
+endif
+
 ifndef BUILDTYPE
 $(info Defaulting BUILDTYPE=release)
 BUILDTYPE=release
@@ -94,9 +99,26 @@ SOURCEDIR:= Source
 INCLUDEPATH:= $(addprefix $(SOURCEDIR)/, Common/Include CNTKv2LibraryDll CNTKv2LibraryDll/API CNTKv2LibraryDll/proto ../Examples/Extensibility/CPP Math CNTK ActionsLib ComputationNetworkLib SGDLib SequenceTrainingLib CNTK/BrainScript Readers/ReaderLib PerformanceProfilerDll)
 INCLUDEPATH+=$(PROTOBUF_PATH)/include
 # COMMON_FLAGS include settings that are passed both to NVCC and C++ compilers.
-COMMON_FLAGS:= $(COMMON_FLAGS) -DHAS_MPI=$(HAS_MPI) -D_POSIX_SOURCE -D_XOPEN_SOURCE=600 -D__USE_XOPEN2K -std=c++11 -DCUDA_NO_HALF -D__CUDA_NO_HALF_OPERATORS__
+COMMON_FLAGS:= -DHAS_MPI=$(HAS_MPI) $(COMMON_FLAGS) -D_POSIX_SOURCE -D_XOPEN_SOURCE=600 -D__USE_XOPEN2K -std=c++11 -DCUDA_NO_HALF -D__CUDA_NO_HALF_OPERATORS__ -D__HIP_ENABLE_CUB__
 CPPFLAGS:=
 CXXFLAGS:= $(SSE_FLAGS) $(CXXFLAGS) -std=c++0x -fopenmp -fpermissive -fPIC -Werror -fcheck-new
+
+ifdef HIP_PATH
+COMMON_FLAGS += -DHIP_COMPILE
+ifeq ($(HIP_PLATFORM), nvcc)
+	CXXFLAGS += -D__HIP_PLATFORM_NVCC__
+	COMPILE_FLAGS = -Xcompiler "-fPIC"
+	COMMON_FLAGS += -D__HIP_ENABLE_HALF__
+else
+ifeq ($(HIP_PLATFORM), hcc)
+	CXXFLAGS += -D__HIP_PLATFORM_HCC__
+	COMPILE_FLAGS = "-fPIC"
+endif
+endif
+else
+COMMON_FLAGS += -DCUDA_COMPILE
+endif
+        
 LIBPATH:=
 LIBS_LIST:=
 LDFLAGS:=
@@ -119,9 +141,13 @@ SRC:=
 all : buildall
 
 # Set up basic nvcc options and add CUDA targets from above
-CUFLAGS = -m 64
+ifneq ($(HIP_PLATFORM), hcc)
+        CUFLAGS = -m 64
+endif
 
-ifdef CUDA_PATH
+ifdef HIP_PATH
+
+ifeq ($(HIP_PLATFORM), nvcc)
   ifndef GDK_INCLUDE_PATH
     GDK_INCLUDE_PATH=/usr/include/nvidia/gdk
     $(info defaulting GDK_INCLUDE_PATH to $(GDK_INCLUDE_PATH))
@@ -132,24 +158,13 @@ ifdef CUDA_PATH
     $(info defaulting GDK_NVML_LIB_PATH to $(GDK_NVML_LIB_PATH))
   endif
 
-  ifndef CUB_PATH
-    $(info defaulting CUB_PATH to /usr/local/cub-1.4.1)
-    CUB_PATH=/usr/local/cub-1.4.1
-  endif
-
-  DEVICE = gpu
-
-  NVCC = $(CUDA_PATH)/bin/nvcc
-
   INCLUDEPATH+=$(GDK_INCLUDE_PATH)
-  INCLUDEPATH+=$(CUB_PATH)
-
-# Set up CUDA includes and libraries
   INCLUDEPATH += $(CUDA_PATH)/include
   LIBPATH += $(CUDA_PATH)/lib64
+  LIBS_LIST += hipblas hiprand hipsparse
   LIBS_LIST += cublas cudart cuda curand cusparse nvidia-ml
 
-# Set up cuDNN if needed
+  # Set up cuDNN if needed
   ifdef CUDNN_PATH
     INCLUDEPATH += $(CUDNN_PATH)/cuda/include
     LIBPATH += $(CUDNN_PATH)/cuda/lib64
@@ -164,6 +179,39 @@ ifdef CUDA_PATH
     LIBS_LIST += nccl
     COMMON_FLAGS += -DUSE_NCCL
   endif
+endif
+
+ifeq ($(HIP_PLATFORM), hcc)
+  LIBS_LIST += hipblas hip_hcc hiprand hipsparse MIOpen
+  INCLUDEPATH += ${INSTALL_DIR}/miopen/include/
+  INCLUDEPATH += $(INSTALL_DIR)/rocprim/include/
+endif
+
+  ifndef CUB_PATH
+    $(info defaulting CUB_PATH to /usr/local/cub-1.4.1)
+    CUB_PATH=/usr/local/cub-hip
+  endif
+
+  DEVICE = gpu
+
+  INCLUDEPATH+=$(CUB_PATH) ${INSTALL_DIR}/cub-hip/external/Thrust
+
+# Set up CUDA includes and libraries
+  ifdef HIPDNN_PATH
+    INCLUDEPATH += $(HIPDNN_PATH)/include
+    #LIBPATH += /opt/rocm/lib64
+    LIBPATH += $(INSTALL_DIR)/lib64
+    LIBS_LIST += hipDNN
+    COMMON_FLAGS +=-DUSE_HIPDNN
+  endif
+  INCLUDEPATH += $(HIP_PATH)/include
+  INCLUDEPATH += $(INSTALL_DIR)/hipblas/include/
+  INCLUDEPATH += $(INSTALL_DIR)/hiprand/include/
+  INCLUDEPATH += $(INSTALL_DIR)/rocrand/include/
+  INCLUDEPATH += $(INSTALL_DIR)/hcsparse/include/
+  INCLUDEPATH += $(INSTALL_DIR)/hipcub/include/
+  LIBPATH += $(INSTALL_DIR)/lib64
+
 else
   DEVICE = cpu
 
@@ -181,8 +229,10 @@ ifeq ("$(MATHLIB)","mkl")
   COMMON_FLAGS += -DUSE_MKL
 endif
 
+ifeq ($(HIP_PLATFORM), nvcc)
 ifeq ($(CUDA_GDR),1)
   COMMON_FLAGS += -DUSE_CUDA_GDR
+endif
 endif
 
 ifeq ("$(MATHLIB)","openblas")
@@ -213,13 +263,20 @@ endif
 # Set up nvcc target architectures (will generate code to support them all, i.e. fat-binary, in release mode)
 # In debug mode we only include cubin/PTX for 30 and rely on PTX / JIT to generate the required native cubin format
 # see also http://docs.nvidia.com/cuda/pascal-compatibility-guide/index.html#building-applications-with-pascal-support
-GENCODE_SM30 := -gencode arch=compute_30,code=\"sm_30,compute_30\"
-GENCODE_SM35 := -gencode arch=compute_35,code=\"sm_35,compute_35\"
-GENCODE_SM50 := -gencode arch=compute_50,code=\"sm_50,compute_50\"
-GENCODE_SM52 := -gencode arch=compute_52,code=\"sm_52,compute_52\"
-GENCODE_SM60 := -gencode arch=compute_60,code=\"sm_60,compute_60\"
-GENCODE_SM61 := -gencode arch=compute_61,code=\"sm_61,compute_61\"
-GENCODE_SM70 := -gencode arch=compute_70,code=\"sm_70,compute_70\"
+ifeq ($(HIP_PLATFORM), nvcc)
+GENCODE_SM30 := -gencode arch=compute_30,code=sm_30
+GENCODE_SM35 := -gencode arch=compute_35,code=sm_35
+GENCODE_SM50 := -gencode arch=compute_50,code=sm_50
+GENCODE_SM52 := -gencode arch=compute_52,code=sm_52
+GENCODE_SM60 := -gencode arch=compute_60,code=sm_60
+GENCODE_SM61 := -gencode arch=compute_61,code=sm_61
+GENCODE_SM70 := -gencode arch=compute_70,code=sm_70
+#GENCODE := $(GENCODE_SM30) $(GENCODE_SM35) $(GENCODE_SM50) $(GENCODE_SM52) $(GENCODE_SM60) $(GENCODE_SM61)
+else
+ifeq ($(HIP_PLATFORM), hcc)
+GENCODE_FLAGS := -Wno-deprecated-register
+endif
+endif
 
 # Should we relocate *.gcno and *.gcda files using -fprofile-dir option?
 # Use GCOV_PREFIX and GCOV_PREFIX_STRIP if relocating:
@@ -236,26 +293,32 @@ ifeq ("$(BUILDTYPE)","debug")
   ifdef CNTK_CUDA_CODEGEN_DEBUG
     GENCODE_FLAGS := $(CNTK_CUDA_CODEGEN_DEBUG)
   else
-    GENCODE_FLAGS := $(GENCODE_SM30)
+    ifneq ($(HIP_PLATFORM), hcc)
+      GENCODE_FLAGS := $(GENCODE_SM30)
+      CUFLAGS += -use_fast_math
+    endif
   endif
 
   CXXFLAGS += -g
   LDFLAGS += -rdynamic
   COMMON_FLAGS += -D_DEBUG -DNO_SYNC
-  CUFLAGS += -O0 -g -use_fast_math -lineinfo  $(GENCODE_FLAGS)
+  CUFLAGS += -O0 -g -lineinfo  $(GENCODE_FLAGS)
 endif
 
 ifeq ("$(BUILDTYPE)","release")
   ifdef CNTK_CUDA_CODEGEN_RELEASE
     GENCODE_FLAGS := $(CNTK_CUDA_CODEGEN_RELEASE)
   else
-    GENCODE_FLAGS := $(GENCODE_SM30) $(GENCODE_SM35) $(GENCODE_SM50) $(GENCODE_SM60) $(GENCODE_SM61) $(GENCODE_SM70)
+    ifneq ($(HIP_PLATFORM), hcc)
+        GENCODE_FLAGS := $(GENCODE_SM30) $(GENCODE_SM35) $(GENCODE_SM50) $(GENCODE_SM60) $(GENCODE_SM61) $(GENCODE_SM70)
+        CUFLAGS += -use_fast_math
+    endif
   endif
 
-  CXXFLAGS += -g -O4
+  CXXFLAGS += -g -O3
   LDFLAGS += -rdynamic
   COMMON_FLAGS += -DNDEBUG -DNO_SYNC
-  CUFLAGS += -O3 -g -use_fast_math $(GENCODE_FLAGS)
+  CUFLAGS += -O3 -g $(GENCODE_FLAGS)
 endif
 
 ifdef CNTK_CUDA_DEVICE_DEBUGINFO
@@ -402,7 +465,7 @@ MATH_SRC =\
 	$(SOURCEDIR)/Math/TensorView.cpp \
 	$(SOURCEDIR)/Math/NcclComm.cpp \
 
-ifdef CUDA_PATH
+ifdef HIP_PATH
 MATH_SRC +=\
 	$(SOURCEDIR)/Math/CuDnnBatchNormalization.cu \
 	$(SOURCEDIR)/Math/CuDnnCommon.cu \
@@ -437,8 +500,11 @@ $(CNTKMATH_LIB): $(MATH_OBJ) | $(PERF_PROFILER_LIB)
 	@echo $(SEPARATOR)
 	@echo creating $@ for $(ARCH) with build type $(BUILDTYPE)
 	@mkdir -p $(dir $@)
-	$(CXX) $(LDFLAGS) -shared $(patsubst %,-L%, $(LIBPATH) $(LIBDIR) $(GDK_NVML_LIB_PATH)) $(patsubst %,$(RPATH)%, $(ORIGINDIR) $(LIBPATH)) -o $@ $^ $(LIBS) -fopenmp -l$(PERF_PROFILER)
-
+ifeq ($(HIP_PLATFORM), hcc)
+	$(HIPCC) $(LDFLAGS) -shared $(patsubst %,-L%, $(LIBPATH) $(LIBDIR) $(GDK_NVML_LIB_PATH)) -o $@ $^ $(LIBS) -fopenmp=libiomp5 -l$(PERF_PROFILER)
+else
+	$(CXX) $(LDFLAGS) -shared $(patsubst %,-L%, $(LIBPATH) $(LIBDIR) $(GDK_NVML_LIB_PATH)) $(patsubst %,$(RPATH)%, $(ORIGINDIR) $(LIBPATH)) -o $@ $^ $(LIBS) -fopenmp -l$(PERF_PROFILER) 
+endif
 
 # Any executable using Common or ReaderLib needs to link these libraries.
 READER_LIBS := $(CNTKMATH_LIB) $(PERF_PROFILER_LIB)
@@ -474,7 +540,7 @@ SEQUENCE_TRAINING_LIB_SRC =\
 	$(SOURCEDIR)/SequenceTrainingLib/latticeforwardbackward.cpp \
 	$(SOURCEDIR)/SequenceTrainingLib/parallelforwardbackward.cpp \
 
-ifdef CUDA_PATH
+ifdef HIP_PATH
 SEQUENCE_TRAINING_LIB_SRC +=\
 	$(SOURCEDIR)/Math/cudalatticeops.cu \
 	$(SOURCEDIR)/Math/cudalattice.cpp \
@@ -715,7 +781,7 @@ $(EVAL_EXTENDED_CLIENT): $(EVAL_EXTENDED_CLIENT_OBJ) | $(EVAL_LIB) $(READER_LIBS
 ########################################
 CNTKLIBRARY_CPP_EVAL_EXAMPLES:=$(BINDIR)/CNTKLibraryCPPEvalExamples
 
-ifdef CUDA_PATH
+ifdef HIP_PATH
 CNTKLIBRARY_CPP_EVAL_EXAMPLES_SRC=\
 	$(SOURCEDIR)/../Examples/Evaluation/CNTKLibraryCPPEvalGPUExamples/CNTKLibraryCPPEvalGPUExamples.cpp\
 	$(SOURCEDIR)/../Examples/Evaluation/CNTKLibraryCPPEvalCPUOnlyExamples/CNTKLibraryCPPEvalExamples.cpp
@@ -1319,7 +1385,7 @@ $(UNITTEST_NETWORK): $(UNITTEST_NETWORK_OBJ) | $(READER_LIBS) $(CNTKTEXTFORMATRE
 	@echo $(SEPARATOR)
 	@mkdir -p $(dir $@)
 	@echo building $@ for $(ARCH) with build type $(BUILDTYPE)
-	$(CXX) $(LDFLAGS) $(patsubst %,-L%, $(LIBDIR) $(LIBPATH) $(GDK_NVML_LIB_PATH) $(BOOSTLIB_PATH)) $(patsubst %, $(RPATH)%, $(ORIGINLIBDIR) $(LIBPATH) $(BOOSTLIB_PATH)) -o $@ $^ $(BOOSTLIBS) $(LIBS) $(lMULTIVERSO) $(L_READER_LIBS) -ldl -fopenmp  $(PROTOBUF_PATH)/lib/libprotobuf.a  
+	$(CXX) $(LDFLAGS) $(patsubst %,-L%, $(LIBDIR) $(LIBPATH) $(GDK_NVML_LIB_PATH) $(BOOSTLIB_PATH)) $(patsubst %, $(RPATH)%, $(ORIGINLIBDIR) $(LIBPATH) $(BOOSTLIB_PATH)) -o $@ $^ $(BOOSTLIBS) $(LIBS) $(lMULTIVERSO) $(L_READER_LIBS) -ldl -fopenmp  $(PROTOBUF_PATH)/lib/libprotobuf.a 
 
 UNITTEST_MATH_SRC = \
 	$(SOURCEDIR)/../Tests/UnitTests/MathTests/BatchNormalizationEngineTests.cpp \
@@ -1356,7 +1422,11 @@ $(UNITTEST_MATH): $(UNITTEST_MATH_OBJ) | $(READER_LIBS)
 	@echo $(SEPARATOR)
 	@mkdir -p $(dir $@)
 	@echo building $@ for $(ARCH) with build type $(BUILDTYPE)
+ifeq ($(HIP_PLATFORM), hcc)
+	$(HIPCC) $(LDFLAGS) $(patsubst %,-L%, $(LIBDIR) $(LIBPATH) $(GDK_NVML_LIB_PATH) $(BOOSTLIB_PATH)) $(patsubst %, $(RPATH)%, $(ORIGINLIBDIR) $(LIBPATH) $(BOOSTLIB_PATH)) -g -o $@ $^ $(BOOSTLIBS) $(LIBS)  $(L_READER_LIBS) -ldl -fopenmp=libiomp5 -pthread -Wl,-rpath -Wl,/usr/local/mpi/lib -Wl,--enable-new-dtags -L/usr/local/mpi/lib -lmpi_cxx -lmpi
+else
 	$(CXX) $(LDFLAGS) $(patsubst %,-L%, $(LIBDIR) $(LIBPATH) $(GDK_NVML_LIB_PATH) $(BOOSTLIB_PATH)) $(patsubst %, $(RPATH)%, $(ORIGINLIBDIR) $(LIBPATH) $(BOOSTLIB_PATH)) -o $@ $^ $(BOOSTLIBS) $(LIBS)  $(L_READER_LIBS) -ldl -fopenmp
+endif
 
 UNITTEST_BRAINSCRIPT_SRC = \
 	$(SOURCEDIR)/CNTK/BrainScript/BrainScriptEvaluator.cpp \
@@ -1575,7 +1645,7 @@ $(OBJDIR)/%.o : %.cu $(BUILD_CONFIGURATION)
 	@echo $(SEPARATOR)
 	@echo creating $@ for $(ARCH) with build type $(BUILDTYPE)
 	@mkdir -p $(dir $@)
-	$(NVCC) -c $< -o $@ $(COMMON_FLAGS) $(CUFLAGS) $(INCLUDEPATH:%=-I%) -Xcompiler "-fPIC -Werror"
+	$(HIPCC) -c $< -o $@ $(COMMON_FLAGS) $(CUFLAGS) $(INCLUDEPATH:%=-I%) $(COMPILE_FLAGS)
 
 $(OBJDIR)/%.pb.o : %.pb.cc $(BUILD_CONFIGURATION)
 	@echo $(SEPARATOR)
@@ -1601,3 +1671,4 @@ clean:
 buildall : $(ALL)
 	@echo $(SEPARATOR)
 	@echo finished building for $(ARCH) with build type $(BUILDTYPE)
+

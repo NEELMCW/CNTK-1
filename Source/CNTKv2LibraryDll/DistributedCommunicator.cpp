@@ -64,9 +64,10 @@ namespace CNTK
             return viewPtr->WritableDataBuffer<float>();
         if (viewPtr->GetDataType() == DataType::Double)
             return viewPtr->WritableDataBuffer<double>();
+#ifdef __HIP_ENABLE_HALF__
         if (viewPtr->GetDataType() == DataType::Float16)
             return viewPtr->WritableDataBuffer<float16>();
-
+#endif /*__HIP_ENABLE_HALF__*/
         LogicError("Unknown DataType");
         return nullptr; // Make compiler happy.
     }
@@ -399,11 +400,13 @@ namespace CNTK
                 AllReduceData(static_cast<double*>(inputData), static_cast<double*>(outputData), numElements,
                     &allReduceRequests, (inputValue->Device() == DeviceDescriptor::CPUDevice()));
             }
+#ifdef __HIP_ENABLE_HALF__
             else if (dataType == DataType::Float16)
             {
                 AllReduceDataHalf(static_cast<half*>(inputData), static_cast<half*>(outputData), numElements,
                     &allReduceRequests, (inputValue->Device() == DeviceDescriptor::CPUDevice()));
             }
+#endif /*__HIP_ENABLE_HALF__*/
             else
                 LogicError("MPICommunicator: Unknown DataType.");
         }
@@ -519,13 +522,13 @@ namespace CNTK
             if (aggregateOnCPU)
             {
                 pCol2BlockId = reinterpret_cast<SparseIndexType*>(m_intermediateSBCIndexCPUBuffers[idx].data.get());
-                cudaMemcpy(pCol2BlockId, sbcInfo.col2BlockId, sizeof(SparseIndexType) * sbcInfo.numCols, cudaMemcpyDeviceToHost);
+                hipMemcpy(pCol2BlockId, sbcInfo.col2BlockId, sizeof(SparseIndexType) * sbcInfo.numCols, hipMemcpyDeviceToHost);
             }
             else
             {
                 // aggregate on GPU, since we'll do inplace aggregation for col2BlockId, remember the original one in blockId2Col
                 pCol2BlockId = const_cast<SparseIndexType*>(sbcInfo.col2BlockId);
-                cudaMemcpy(const_cast<SparseIndexType*>(sbcInfo.blockId2Col), pCol2BlockId, sizeof(SparseIndexType) * sbcInfo.numCols, cudaMemcpyDeviceToDevice);
+                hipMemcpy(const_cast<SparseIndexType*>(sbcInfo.blockId2Col), pCol2BlockId, sizeof(SparseIndexType) * sbcInfo.numCols, hipMemcpyDeviceToDevice);
             }
 
             // all-reduce max to find out the columns that would have value after aggregation
@@ -548,7 +551,7 @@ namespace CNTK
             // if aggregation is done on CPU, the buffer already has valid data, otherwise, copy from gpu
             if (!aggregateOnCPU)
             {
-                cudaMemcpy(aggregatedCol2BlockId, sbcInfo.col2BlockId, sbcInfo.numCols * sizeof(SparseIndexType), cudaMemcpyDeviceToHost);
+                hipMemcpy(aggregatedCol2BlockId, sbcInfo.col2BlockId, sbcInfo.numCols * sizeof(SparseIndexType), hipMemcpyDeviceToHost);
             }
 
             // update col2blockId and count new blocks
@@ -581,7 +584,7 @@ namespace CNTK
                 if (m_intermediateSBCValueCPUBuffers[idx].totalSize < requiredSize)
                     m_intermediateSBCValueCPUBuffers[idx] = AllocateIntermediateBuffer(sbcValues[idx]->Device().Id(), requiredSize);
                 void* nzCPU = m_intermediateSBCValueCPUBuffers[idx].data.get();
-                cudaMemcpy(nzCPU, nz, requiredSize, cudaMemcpyDeviceToHost);
+                hipMemcpy(nzCPU, nz, requiredSize, hipMemcpyDeviceToHost);
                 nz = nzCPU;
             }
 
@@ -589,13 +592,15 @@ namespace CNTK
                 AllReduceData<float>((float*)nz, (float*)nz, requiredElements, nullptr, aggregateOnCPU, MPI_SUM, true);
             else if (sbc->GetDataType() == DataType::Double)
                 AllReduceData<double>((double*)nz, (double*)nz, requiredElements, nullptr, aggregateOnCPU, MPI_SUM, true);
+#ifdef __HIP_ENABLE_HALF__
             else if (sbc->GetDataType() == DataType::Float16)
                 AllReduceDataHalf((half*)nz, (half*)nz, requiredElements, nullptr, aggregateOnCPU, MPI_SUM, true);
+#endif /*__HIP_ENABLE_HALF__*/
 
             if (aggregateOnCPU)
             {
                 // since only GPU sparse block column is supported, copy aggregated nz back to GPU
-                cudaMemcpy(nzGPU, nz, requiredSize, cudaMemcpyHostToDevice);
+                hipMemcpy(nzGPU, nz, requiredSize, hipMemcpyHostToDevice);
             }
         }
 #endif
@@ -728,6 +733,7 @@ namespace CNTK
             m_mpi->AllReduceAsync(inputData, outputData, numElements, &(pAllReduceRequests->back()), op);
     }
 
+#ifdef __HIP_ENABLE_HALF__
     void MPICommunicatorImpl::AllReduceDataHalf(half* inputData, half* outputData, size_t numElements, std::vector<MPI_Request>* pAllReduceRequests, bool dataOnCPU, MPI_Op op, bool forceSync)
     {
         if (m_nccl->IsSupported() && !dataOnCPU)
@@ -740,4 +746,5 @@ namespace CNTK
         //half aggregation other than NCCL is not supported
         NOT_IMPLEMENTED;
     }
+#endif /*__HIP_ENABLE_HALF__*/
 }
